@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 覆盖 package.json engines 声称的最低版本 + 当前 LTS
+        os: [ubuntu-latest, windows-latest]
+        node: ['14', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 语法检查
+        run: node --check index.js
+
+      # 零依赖仓库不需要 npm ci，直接跑 node:test（Node 14 不支持 node --test，
+      # 故低版本矩阵用轻量自检脚本，功能等价）
+      - name: 单测 + spawn 级冒烟（Node >= 18）
+        if: matrix.node != '14'
+        run: node --test
+        shell: bash
+
+      - name: 冒烟自检（Node 14 兼容路径）
+        if: matrix.node == '14'
+        shell: bash
+        run: |
+          set -e
+          node index.js --version
+          node index.js --help > /dev/null
+          # 空目录 + 门禁 → 必须 rc=3（不可谎报通过）
+          d=$(mktemp -d)
+          set +e
+          node index.js --root "$d" --min-score 90
+          code=$?
+          set -e
+          test "$code" -eq 3 || { echo "空输入应退 3，实际 $code"; exit 1; }
+          # 未知选项 → rc=2
+          set +e
+          node index.js --bogus > /dev/null 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 2 || { echo "未知选项应退 2，实际 $code"; exit 1; }
+
+  # 工具自身当门禁用：确认它在本仓库源码上真能跑出 pass
+  dogfood:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 用 litdoctor 体检 litdoctor 自己
+        run: node index.js --json --root . --min-score 95

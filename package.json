@@ -1,0 +1,36 @@
+{
+  "name": "litdoctor",
+  "version": "1.1.0",
+  "description": "零依赖单文件 Node CLI：硬编码魔法值/重复字面量卫生体检，带真实性的 CI 门禁",
+  "bin": {
+    "litdoctor": "index.js"
+  },
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check index.js && node --test"
+  },
+  "keywords": [
+    "cli",
+    "code-quality",
+    "lint",
+    "magic-numbers",
+    "static-analysis",
+    "zero-dependency",
+    "ci"
+  ],
+  "license": "MIT",
+  "author": "ReTri · 樊斯瑞",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huanweide/litdoctor.git"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}
