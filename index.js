@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // 惯用量白名单：魔法值检测排除项（常见哨兵/边界/惯用常量）
 const COMMON_NUMBERS = new Set([
@@ -20,7 +20,9 @@ const DEFAULTS = {
   maxIssues: Infinity,
   maxMedium: Infinity,
   maxLow: Infinity,
-  minScore: 0,
+  // null 而非 0：0 是合法阈值（健康分不可能低于 0，等价于不设限），
+  // 用它当默认值会让「用户到底配没配门禁」永远为真，三态就废了。
+  minScore: null,
   minStringLen: 7,
   repeatThreshold: 3,
   json: false,
@@ -45,25 +47,43 @@ function langOf(filePath) {
   return 'js';
 }
 
-function isTestFile(filePath) {
-  const base = path.basename(filePath);
+// 只看「文件名」与「相对 root 的目录段」，不看 root 以上的祖先路径。
+// 历史缺陷：直接对完整 filePath 做 /tests\// 正则，若 root 以上的祖先目录里带 tests/
+// 会把整棵源码树误判为测试文件，导致扫 0 个文件却报「干净」。
+// 传 relPath（相对 root 的路径）即可完全隔离祖先路径。
+function isTestFile(filePath, relPath) {
+  const norm = (relPath || filePath).replace(/\\/g, '/');
+  const parts = norm.split('/').filter(Boolean);
+  const base = parts[parts.length - 1];
+  const dirs = parts.slice(0, -1).map((p) => p.toLowerCase());
   return (
-    /\.(?:test|spec)\.[jt]sx?$/.test(filePath) ||
+    /\.(?:test|spec)\.[jt]sx?$/.test(base) ||
     /^test\.[jt]sx?$/.test(base) ||
-    /(^|[/\\])__tests__\//.test(filePath) ||
-    /(^|[/\\])tests\//.test(filePath) ||
+    dirs.includes('__tests__') ||
+    dirs.includes('test') ||
+    dirs.includes('tests') ||
     /^test_.*\.py$/.test(base) ||
     /^.*_test\.go$/.test(base)
   );
 }
 
-function isSkippable(filePath) {
-  const lower = filePath.toLowerCase();
-  if (lower.includes('node_modules') || lower.includes('/.git/') ||
-      lower.includes('\\.git\\') || lower.includes('dist') ||
-      lower.includes('build') || lower.includes('coverage')) return true;
+// 排除目录：按「路径段」精确匹配，不再用子串包含。
+// 历史缺陷：子串匹配会让 distribution.js / payload.js / rebuild.js 等正常源码文件被整棵跳过，
+// 导致「扫 0 个对象却报健康分 100」——门禁工具最恶劣的假绿灯。
+const SKIP_DIR_SEGMENTS = new Set([
+  'node_modules', '.git', 'dist', 'build', 'coverage',
+  'out', '.next', '.nuxt', 'vendor', '__pycache__', '.venv', 'venv',
+]);
+
+function isSkippable(filePath, relPath) {
+  const rel = relPath || filePath;
+  const parts = rel.replace(/\\/g, '/').split('/').filter(Boolean);
+  const dirs = parts.slice(0, -1).map((p) => p.toLowerCase());
+  for (const d of dirs) {
+    if (SKIP_DIR_SEGMENTS.has(d)) return true;
+  }
   if (!SUPPORTED_EXT.has(path.extname(filePath).toLowerCase())) return true;
-  if (isTestFile(filePath)) return true;
+  if (isTestFile(filePath, relPath)) return true;
   return false;
 }
 
@@ -231,6 +251,7 @@ function scanFile(filePath, lang, opts) {
 }
 
 // ---------- 目录收集 ----------
+// 返回 [{ abs, rel }]，rel 是相对 root 的路径，供 isSkippable 做段级判断
 function collectFiles(root) {
   const out = [];
   let stat;
@@ -241,9 +262,10 @@ function collectFiles(root) {
     process.exit(2);
   }
   if (!stat.isDirectory()) {
-    return isSkippable(root) ? [] : [root];
+    const base = path.basename(root);
+    return isSkippable(root, base) ? [] : [{ abs: root, rel: base }];
   }
-  const walk = (dir) => {
+  const walk = (dir, rel) => {
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -252,15 +274,16 @@ function collectFiles(root) {
     }
     for (const ent of entries) {
       const full = path.join(dir, ent.name);
+      const relPath = rel ? `${rel}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
-        if (ent.name === 'node_modules' || ent.name === '.git') continue;
-        walk(full);
+        if (SKIP_DIR_SEGMENTS.has(ent.name.toLowerCase())) continue;
+        walk(full, relPath);
       } else if (ent.isFile()) {
-        if (!isSkippable(full)) out.push(full);
+        if (!isSkippable(full, relPath)) out.push({ abs: full, rel: relPath });
       }
     }
   };
-  walk(root);
+  walk(root, '');
   return out;
 }
 
@@ -310,15 +333,20 @@ function printHelp() {
   -V, --version           显示版本
   --root <dir>            扫描根目录 (默认 ".")
   --json                  输出纯 JSON (门禁仅用退出码)
-  --min-string-len <n>    重复字面量最小长度 (默认 6)
+  --min-string-len <n>    重复字面量最小长度 (默认 7)
   --repeat-threshold <n>  字面量重复次数阈值 (默认 3)
-  --max-issues <n>        问题总数上限 (超则 CI 失败)
+  --max-issues <n>        问题总数上限 (超则失败)
   --max-medium <n>        medium 级问题上限
   --max-low <n>           low 级问题上限
-  --min-score <n>         健康分下限 (低于则 CI 失败)
-  --fail-on-high          存在 high 级问题则 CI 失败 (本工具暂无 high 规则，保留兼容)
+  --min-score <n>         健康分下限 (低于则失败)
+  --fail-on-high          存在 high 级问题则失败 (本工具暂无 high 规则，保留兼容)
 
-退出码: 0=通过 / 2=门禁失败 / 其他=运行错误`);
+门禁三态（--json 里见 gate.state / basisComplete 字段）:
+  pass           配了门禁阈值且输入可信、指标达标
+  fail           配了门禁阈值且至少一项不达标
+  inconclusive   未配门禁阈值，或扫描输入为空 → 无法下结论，**不算通过**
+
+退出码: 0=通过 / 2=门禁失败 / 3=无法判定（未配门禁或输入为空）/ 其他=运行错误`);
 }
 
 // ---------- 参数解析（三类分离）----------
@@ -343,13 +371,30 @@ function parseArgs(argv) {
       continue;
     }
     if (STR_FLAGS[a]) {
-      o.root = argv[++i];
+      const next = argv[i + 1];
+      // 历史缺陷：`--root` 缺值时 o.root 被赋成 undefined，随后 statSync(undefined)
+      // 抛出无意义的「根目录不存在: undefined」；若下一个 token 是别的标志（`--root --json`）
+      // 更会被静默当成目录名吞掉。这里显式校验。
+      if (next === undefined || next.startsWith('-')) {
+        console.error(`选项 ${a} 缺少必需的目录参数`);
+        process.exit(2);
+      }
+      o.root = next;
+      i++;
       continue;
     }
     if (NUM_FLAGS[a]) {
-      const v = Number(argv[++i]);
-      if (!Number.isFinite(v)) {
-        console.error(`选项 ${a} 需要数字参数`);
+      const raw = argv[++i];
+      // Number('') === 0 —— 空串会静默变成阈值 0，等于门禁失效，必须单独拦。
+      // Number('12abc') === NaN；parseInt('12abc') === 12（静默截断，更阴险）。
+      // 门禁参数写错 = 门禁不存在，一律退 2。
+      const v = Number(raw);
+      if (raw === undefined || String(raw).trim() === '' || !Number.isFinite(v)) {
+        console.error(`选项 ${a} 需要数字参数（收到: ${raw === undefined ? '<缺失>' : raw}）`);
+        process.exit(2);
+      }
+      if (!Number.isInteger(v) || v < 0) {
+        console.error(`选项 ${a} 需要非负整数（收到: ${raw}）`);
         process.exit(2);
       }
       const key = a.replace(/^--/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -364,6 +409,56 @@ function parseArgs(argv) {
   return o;
 }
 
+// ---------- 门禁三态 ----------
+// 历史缺陷（家族共性最恶劣失败模式）：扫描型工具扫 0 个对象却输出
+// 「健康分 100/100 · 未发现问题」并 rc=0 —— CI 上就是一盏永不熄灭的绿灯。
+// 现在统一为三态：pass(通过) / fail(不达标) / inconclusive(输入不可信，无法下结论)。
+const GATE_STATE = {
+  PASS: 'pass',
+  FAIL: 'fail',
+  INCONCLUSIVE: 'inconclusive',
+};
+
+function buildGateState({ files, totalBytes, opts, failed }) {
+  // 门禁未启用：所有阈值都是默认值，用户根本没配门禁
+  const configured = Number.isFinite(opts.minScore) || opts.maxIssues !== Infinity ||
+    opts.maxMedium !== Infinity || opts.maxLow !== Infinity || opts.failOnHigh;  if (!configured) {
+    return {
+      state: GATE_STATE.INCONCLUSIVE,
+      configured: false,
+      reason: '未配置任何门禁阈值，本次仅体检不判定（请显式传入 --min-score 或 --max-* / --fail-on-high）',
+    };
+  }
+  // 输入不可信：扫到 0 个文件 → 无法得出任何结论，绝不能报 pass
+  if (files.length === 0) {
+    return {
+      state: GATE_STATE.INCONCLUSIVE,
+      configured: true,
+      reason: '扫描输入为空（0 个可分析文件），无法判定；请确认 --root 指向源码目录且不是全部命中排除规则',
+    };
+  }
+  // 全部文件读不到内容（编码异常 / 空文件 / 全部超 MAX_FILE_BYTES）→ 同样不可信
+  if (totalBytes === 0) {
+    return {
+      state: GATE_STATE.INCONCLUSIVE,
+      configured: true,
+      reason: '扫描到的文件全部无可解析内容，无法判定',
+    };
+  }
+  return {
+    state: failed ? GATE_STATE.FAIL : GATE_STATE.PASS,
+    configured: true,
+    reason: failed ? '存在不达标项' : '全部指标达标',
+  };
+}
+
+function exitCodeFor(state) {
+  if (state.state === GATE_STATE.FAIL) return 2;
+  // 输入不可信：退出码 3 与「门禁失败」区分开，避免被误读成「发现了问题」
+  if (state.state === GATE_STATE.INCONCLUSIVE) return 3;
+  return 0;
+}
+
 // ---------- 主入口 ----------
 function main() {
   const opts = parseArgs(process.argv.slice(2));
@@ -373,37 +468,62 @@ function main() {
   const files = collectFiles(opts.root);
   let allIssues = [];
   let totalLines = 0;
+  let totalBytes = 0;
   for (const f of files) {
-    const lang = langOf(f);
-    const issues = scanFile(f, lang, opts);
+    const abs = f.abs;
+    const lang = langOf(abs);
+    const issues = scanFile(abs, lang, opts);
     allIssues = allIssues.concat(issues);
     try {
-      const c = fs.readFileSync(f, 'utf8');
+      const c = fs.readFileSync(abs, 'utf8');
       totalLines += c.split('\n').length;
+      totalBytes += Buffer.byteLength(c, 'utf8');
     } catch (e) { /* ignore */ }
   }
 
   const score = computeScore(allIssues, totalLines);
 
-  if (opts.json) {
-    process.stdout.write(JSON.stringify({
-      tool: 'litdoctor',
-      version: VERSION,
-      summary: { files: files.length, issues: allIssues.length, score },
-      issues: allIssues,
-    }, null, 2));
-  } else {
-    printReport(files.length, allIssues, score);
-  }
-
   // CI 门禁（仅用退出码表达）
   let failed = false;
-  if (score < opts.minScore) failed = true;
+  if (Number.isFinite(opts.minScore) && score < opts.minScore) failed = true;
   if (allIssues.length > opts.maxIssues) failed = true;
   if (countSev(allIssues, 'medium') > opts.maxMedium) failed = true;
   if (countSev(allIssues, 'low') > opts.maxLow) failed = true;
   if (opts.failOnHigh && countSev(allIssues, 'high') > 0) failed = true;
-  return failed ? 2 : 0;
+
+  const gate = buildGateState({ files, totalBytes, opts, failed });
+
+  if (opts.json) {
+    // JSON.stringify(undefined) 返回 undefined 而非字符串 —— 这里字段都是确定的，安全
+    process.stdout.write(JSON.stringify({
+      tool: 'litdoctor',
+      version: VERSION,
+      summary: { files: files.length, issues: allIssues.length, score },
+      gate: { state: gate.state, configured: gate.configured, reason: gate.reason },
+      basisComplete: gate.state !== GATE_STATE.INCONCLUSIVE,
+      issues: allIssues,
+    }, null, 2) + '\n');
+  } else {
+    printReport(files.length, allIssues, score);
+    // 门禁状态始终显式打印：用户必须能一眼看出「这次到底判没判定」。
+    // 只在失败时打印等于让人误以为「没消息就是通过」。
+    console.log('');
+    console.log(`门禁状态: ${gate.state} — ${gate.reason}`);
+  }
+
+  return exitCodeFor(gate);
 }
 
-process.exit(main());
+// 支持被 test.js 直接 require（供单测覆盖内部函数）
+if (require.main === module) {
+  // 注意：这里必须用 process.exitCode 而不是 process.exit()。
+  // process.exit() 会截断异步刷写的 stdout，导致 --json 输出残缺、
+  // 下游 JSON.parse 直接抛错。设置 exitCode 让 Node 自然退出并冲刷缓冲。
+  process.exitCode = main();
+} else {
+  module.exports = {
+    scanFile, collectFiles, tokenize, computeScore, langOf, isTestFile,
+    isSkippable, parseArgs, DEFAULTS, COMMON_NUMBERS, main,
+    buildGateState, exitCodeFor, GATE_STATE, SKIP_DIR_SEGMENTS, VERSION,
+  };
+}

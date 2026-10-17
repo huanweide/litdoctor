@@ -1,0 +1,30 @@
+{
+  "lastOptimized": "2026-10-17",
+  "round": 1,
+  "status": "optimized",
+  "direction": "单点深度特化「门禁真实性」——本工具唯一价值是退出码，退出码错一次用户 CI 就多一次假绿灯",
+  "survival": "保留。魔法值检测赛道：ESLint no-magic-numbers 仅 JS 且需装依赖，SonarQube 需服务，fallow 仅 Rust。零依赖单文件跨语言字面量专科在 npm 上无同级竞品，且与 dupscan(重复代码块)/secscan(安全API)粒度不重叠。",
+  "improvements": [
+    "P0 空扫描谎报通过：扫 0 个文件仍输出健康分 100/100 + rc=0。改为门禁三态 pass/fail/inconclusive，inconclusive 退 3；--json 新增 gate.state 与 basisComplete 字段",
+    "P0 未配门禁阈值时输出「门禁通过」：改为 inconclusive(退 3)。minScore 默认值由 0 改 null，否则 configured 永远为真",
+    "P0 路径子串误判：lower.includes('dist') 导致 distribution.js / rebuild.js / coverage_report.js 整棵被跳过。改为相对 root 的路径段精确匹配",
+    "P0 测试文件判定污染全树：对完整 filePath 匹配 /tests\//，root 以上祖先目录带 tests 时整棵源码树被判为测试。改为只看相对 root 的目录段",
+    "P0 --root 缺值/吞标志：--root 缺值报「根目录不存在: undefined」；--root --json 会把 --json 静默当目录名。改为显式校验退 2",
+    "P1 门禁参数容错：Number('')===0 空串、小数 12.5、负数、尾随垃圾 12abc 一律必须退 2",
+    "P1 process.exit(main()) 截断 stdout 导致 --json 残缺：改为 process.exitCode = main()",
+    "P1 README 文档漂移：--min-string-len 默认值 help 写 6 实际 7；白名单漏 64/256/512/-0.5；重复字面量长度说明与默认值不符",
+    "P1 仓库卫生：补 LICENSE(MIT) / package.json(1.1.0) / .gitignore(6→9 条)；单测从根 test.js 迁入 test/",
+    "P2 零 CI：新增 ubuntu+windows × Node 14/22 矩阵，含 dogfood 自检与 Node 14 兼容冒烟路径",
+    "P2 测试分层：新增 test/smoke-cli.js 20 组 spawn 级冒烟（真实起进程验退出码契约）；单测改真实 require，去掉脆弱的 vm 沙箱源码改写",
+    "P2 新增单测 11 组覆盖全部本轮修复点 + README/源码白名单一致性门禁"
+  ],
+  "tests": { "total": 42, "pass": 42, "fail": 0, "mutation": "9 例中 7 例拦住；2 例逃逸经查为等价变异（双重防线，同时破两处则 4 失败）与平台特性（Windows 下 process.exit 不截断 stdout，2.1MB 实测字节完全相同；Linux runner 会截断，故仍保留 exitCode 写法）" },
+  "decisionLog": [
+    "2026-10-17 决策1：选 litdoctor 作为本轮首个未标记仓库。存活评估通过 → 方向定为门禁真实性而非功能堆叠。原因：家族已有多款卫生工具，litdoctor 的差异化只能来自「结论可不可信」，加规则不解决信任问题。",
+    "2026-10-17 决策2：未配门禁返回 rc=3 而非 0 是破坏性行为变更，但属于「P0 假绿灯」的正确修复。若下游依赖旧的 rc=0 语义，--min-score 0 可显式恢复。",
+    "2026-10-17 决策3：不删 --fail-on-high（本工具暂无 high 规则）。README 已明确标注为兼容保留，避免破坏既有 CI 脚本。",
+    "2026-10-17 自身失误：新增的 collectFiles 路径断言我最初写成 path.join('src','a.js')，在 Windows 上因分隔符不同恒失败——已改为断言内部统一使用 '/' 的 rel 契约。这类平台相关断言以后一律断言归一化后的值。",
+    "2026-10-17 自身失误：Number('')===0 这一类陷阱我第一版守卫只判了 undefined 与 isFinite，被自己新写的冒烟测试当场抓到。教训：写完守卫必须立刻造空串用例，别只测 NaN。"
+  ],
+  "pr": "gh-optimizer/2026-10-17"
+}

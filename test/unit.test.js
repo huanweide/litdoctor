@@ -5,22 +5,14 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 
-const ROOT = path.resolve(__dirname);
+// 本文件位于 test/ 下，ROOT 必须是仓库根（否则 dogfood 用例会扫到 test/ 本身）
+const ROOT = path.resolve(__dirname, '..');
 const INDEX = path.join(ROOT, 'index.js');
 
-// 加载内部函数（去掉末尾 process.exit 以便导出）
-const code = fs.readFileSync(INDEX, 'utf8');
-const codeNoExit = code.replace(
-  /process\.exit\(main\(\)\);\s*$/,
-  'module.exports = { scanFile, collectFiles, tokenize, computeScore, langOf, isTestFile, parseArgs, DEFAULTS, COMMON_NUMBERS, main };'
-);
-const sandbox = { require, process, console, Buffer, module: {}, exports: {} };
-vm.createContext(sandbox);
-vm.runInContext(codeNoExit, sandbox);
-const lib = sandbox.module.exports;
+// index.js 在被 require 时导出内部函数（require.main === module 才执行 main）
+const lib = require(INDEX);
 
 function makeFixtures() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'litdoctor-test-'));
@@ -82,15 +74,19 @@ test('tokenizer skips regex literal numbers', () => {
 test('dogfood: scanning self directory yields zero issues', () => {
   const files = lib.collectFiles(ROOT);
   let all = [];
-  for (const f of files) all = all.concat(lib.scanFile(f, lib.langOf(f), lib.DEFAULTS));
+  for (const f of files) all = all.concat(lib.scanFile(f.abs, lib.langOf(f.abs), lib.DEFAULTS));
   assert.strictEqual(all.length, 0, 'self scan must be clean: ' + JSON.stringify(all));
 });
 
 test('dogfood via CLI: --json output is pure JSON with zero issues', () => {
-  const out = execFileSync('node', [INDEX, '--json', '--root', ROOT], { encoding: 'utf8' });
+  // 必须配门禁阈值：未配门禁时本工具按设计返回 rc=3（inconclusive），
+  // execFileSync 会在非 0 时抛错，那正是「假绿灯」修复后的预期行为。
+  const out = execFileSync('node', [INDEX, '--json', '--root', ROOT, '--min-score', '90'], { encoding: 'utf8' });
   const parsed = JSON.parse(out); // 含尾部文本会抛错
   assert.strictEqual(parsed.tool, 'litdoctor');
   assert.strictEqual(parsed.issues.length, 0);
+  assert.strictEqual(parsed.gate.state, 'pass');
+  assert.strictEqual(parsed.basisComplete, true);
 });
 
 test('CI gate fails when --min-score not met (dirty)', () => {
@@ -156,4 +152,96 @@ test('repeated-literal reports first occurrence line', () => {
   const reps = issues.filter((i) => i.rule === 'repeated-literal');
   assert.strictEqual(reps.length, 1);
   assert.strictEqual(reps[0].line, 2, 'first occurrence line');
+});
+
+// ============ 以下为本轮修复新增的回归用例 ============
+
+test('gate: 0 scanned files is inconclusive, never pass', () => {
+  const g = lib.buildGateState({
+    files: [], totalBytes: 0,
+    opts: Object.assign({}, lib.DEFAULTS, { minScore: 90 }),
+    failed: false,
+  });
+  assert.strictEqual(g.state, lib.GATE_STATE.INCONCLUSIVE);
+  assert.strictEqual(lib.exitCodeFor(g), 3, 'rc must be 3 not 0 — 假绿灯防线');
+});
+
+test('gate: unconfigured thresholds are inconclusive', () => {
+  const g = lib.buildGateState({ files: [{ abs: 'a' }], totalBytes: 10, opts: lib.DEFAULTS, failed: false });
+  assert.strictEqual(g.state, lib.GATE_STATE.INCONCLUSIVE);
+  assert.strictEqual(g.configured, false);
+});
+
+test('gate: all-zero-byte files are inconclusive', () => {
+  const g = lib.buildGateState({
+    files: [{ abs: 'a' }], totalBytes: 0,
+    opts: Object.assign({}, lib.DEFAULTS, { minScore: 90 }),
+    failed: false,
+  });
+  assert.strictEqual(g.state, lib.GATE_STATE.INCONCLUSIVE);
+});
+
+test('gate: configured + trusted input maps to pass/fail correctly', () => {
+  const opts = Object.assign({}, lib.DEFAULTS, { minScore: 90 });
+  const p = lib.buildGateState({ files: [{ abs: 'a' }], totalBytes: 50, opts, failed: false });
+  assert.strictEqual(p.state, lib.GATE_STATE.PASS);
+  assert.strictEqual(lib.exitCodeFor(p), 0);
+  const f = lib.buildGateState({ files: [{ abs: 'a' }], totalBytes: 50, opts, failed: true });
+  assert.strictEqual(f.state, lib.GATE_STATE.FAIL);
+  assert.strictEqual(lib.exitCodeFor(f), 2);
+});
+
+test('regression: filename containing dist/build must NOT be skipped', () => {
+  // 历史缺陷：用 path.includes('dist') 导致 distribution.js / rebuild.js 被整棵跳过
+  for (const name of ['distribution.js', 'rebuild.js', 'coverage_report.js', 'mybuild.js']) {
+    assert.strictEqual(
+      lib.isSkippable(path.join('/proj/src', name), path.join('src', name)),
+      false, name + ' 不应被跳过'
+    );
+  }
+});
+
+test('regression: real dist/build/node_modules directories ARE skipped', () => {
+  assert.strictEqual(lib.isSkippable('/proj/dist/a.js', 'dist/a.js'), true);
+  assert.strictEqual(lib.isSkippable('/proj/build/a.js', 'build/a.js'), true);
+  assert.strictEqual(lib.isSkippable('/proj/node_modules/x/a.js', 'node_modules/x/a.js'), true);
+  assert.strictEqual(lib.isSkippable('/proj/coverage/a.js', 'coverage/a.js'), true);
+  assert.strictEqual(lib.isSkippable('/proj/src/a.txt', 'src/a.txt'), true, '不支持的扩展名');
+});
+
+test('regression: root ancestor named tests must not blank the whole tree', () => {
+  // 历史缺陷：对完整 filePath 做 /tests\// 正则，项目路径含 tests/ 时全树被误判为测试
+  const abs = '/home/u/tests/myproj/src/a.js';
+  assert.strictEqual(lib.isTestFile(abs, path.join('src', 'a.js')), false);
+  // 但相对 root 内的 tests/ 目录仍应被识别为测试
+  assert.strictEqual(lib.isTestFile('/proj/tests/a.js', 'tests/a.js'), true);
+  assert.strictEqual(lib.isTestFile('/proj/src/a.test.js', 'src/a.test.js'), true);
+});
+
+test('collectFiles returns {abs, rel} and skips tests by relative path', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'litdoctor-cf-'));
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.mkdirSync(path.join(dir, 'tests'));
+  fs.writeFileSync(path.join(dir, 'src', 'a.js'), 'const x = 86400000;\n');
+  fs.writeFileSync(path.join(dir, 'tests', 'a.js'), 'const x = 86400000;\n');
+  const files = lib.collectFiles(dir);
+  assert.strictEqual(files.length, 1, '只有 src/a.js 应入选');
+  // rel 内部统一用 '/' 分隔（跨平台稳定），不要用 path.join 断言
+  assert.strictEqual(files[0].rel, 'src/a.js');
+  assert.ok(path.isAbsolute(files[0].abs));
+});
+
+test('DEFAULTS.minScore is null so "configured" can be detected', () => {
+  assert.strictEqual(lib.DEFAULTS.minScore, null,
+    'minScore 必须是 null；用 0 会让 configured 永远为真，三态门禁失效');
+});
+
+test('DEFAULTS whitelist matches README documented values', () => {
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const line = readme.split('\n').find((l) => l.includes('白名单'));
+  assert.ok(line, 'README 必须有一行说明惯用量白名单');
+  for (const v of ['0', '1024', '0.5', '64', '256', '512']) {
+    assert.ok(lib.COMMON_NUMBERS.has(Number(v)), `白名单应含 ${v}`);
+    assert.ok(line.includes(v), `README 白名单行应含 ${v}（文档漂移防线）`);
+  }
 });
