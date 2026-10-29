@@ -123,9 +123,6 @@ node --test          # 42 组：单测 + spawn 级冒烟
 
 其中 `test/smoke-cli.js` 真实起进程验证**退出码契约**。这一层不可省略：`node --test` 的单测只测导出的函数，根本不碰 `process.exitCode`，改退出码时单测会全绿放行。
 
-## 赞助支持
-
-如果这个项目帮到了你，欢迎 [点 Star](https://github.com/huanweide/litdoctor) 支持；也可微信扫码自愿赞助（收款码见 `sponsor/wechat-qr.png`，作者本人带 Tri 水印的码，纯静态图片、不含任何密钥）。
 
 ## 许可证
 
@@ -135,7 +132,7 @@ node --test          # 42 组：单测 + spawn 级冒烟
 
 ## 作者
 
-由 **ReTr · 樊斯瑞** 维护 · [GitHub 主页](https://github.com/huanweide)
+由 **ReTr · huanweide** 维护 · [GitHub 主页](https://github.com/huanweide)
 
 家族同类：devdoctor · testlite · debtlens · a11ydoctor · awaitscan · cycscan · secscan · dupscan · typedoctor · debugdoctor · repodoctor · docdoctor · commitdoctor · reldoctor · pkgdoctor · enghealth
 ---
