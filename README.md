@@ -13,9 +13,11 @@
 
 **🔧 Part of the [Engineering Health Family](https://github.com/huanweide/family-showcase)** (18 zero-dependency checkup axes). Standalone tool — see [doctors](https://github.com/huanweide/doctors) (monorepo) and [enghealth](https://github.com/huanweide/enghealth) (unified runner).
 
+> English: 暂未提供
+
 # litdoctor
 
-零依赖单文件 Node CLI · 工程健康家族（family）第十七轴 · 源码层第十一轴
+零依赖单文件 Node CLI · 硬编码魔法值 / 重复字面量卫生体检：给出 0–100 健康分 + 会说实话的 CI 门禁
 
 「硬编码魔法值 / 重复字面量」卫生体检。扫描 JS/TS/Python/Go 生态，找出散落的裸魔法数字与重复字符串字面量，给出 0–100 健康分，并内置**会说实话的** CI 门禁。
 
@@ -132,7 +134,7 @@ node --test          # 42 组：单测 + spawn 级冒烟
 
 ## 作者
 
-由 **ReTr · huanweide** 维护 · [GitHub 主页](https://github.com/huanweide)
+由 **huanweide** 维护 · [GitHub 主页](https://github.com/huanweide)
 
 家族同类：devdoctor · testlite · debtlens · a11ydoctor · awaitscan · cycscan · secscan · dupscan · typedoctor · debugdoctor · repodoctor · docdoctor · commitdoctor · reldoctor · pkgdoctor · enghealth
 ---
