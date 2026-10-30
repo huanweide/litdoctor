@@ -13,7 +13,7 @@
 
 **🔧 Part of the [Engineering Health Family](https://github.com/huanweide/family-showcase)** (18 zero-dependency checkup axes). Standalone tool — see [doctors](https://github.com/huanweide/doctors) (monorepo) and [enghealth](https://github.com/huanweide/enghealth) (unified runner).
 
-> English: 暂未提供
+**English** · [README_EN.md](./README_EN.md)
 
 # litdoctor
 
